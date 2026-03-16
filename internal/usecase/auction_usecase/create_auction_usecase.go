@@ -6,6 +6,7 @@ import (
 	"fullcycle-auction_go/internal/entity/bid_entity"
 	"fullcycle-auction_go/internal/internal_error"
 	"fullcycle-auction_go/internal/usecase/bid_usecase"
+	"os"
 	"time"
 )
 
@@ -66,6 +67,8 @@ type AuctionUseCase struct {
 	bidRepositoryInterface     bid_entity.BidEntityRepository
 }
 
+const defaultAuctionDuration = 5 * time.Minute
+
 func (au *AuctionUseCase) CreateAuction(
 	ctx context.Context,
 	auctionInput AuctionInputDTO) *internal_error.InternalError {
@@ -78,10 +81,22 @@ func (au *AuctionUseCase) CreateAuction(
 		return err
 	}
 
+	duration := getAuctionDuration()
+
 	if err := au.auctionRepositoryInterface.CreateAuction(
-		ctx, auction); err != nil {
+		ctx, auction, duration); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func getAuctionDuration() time.Duration {
+	auctionDuration := os.Getenv("AUCTION_DURATION")
+	duration, err := time.ParseDuration(auctionDuration)
+	if err != nil {
+		return defaultAuctionDuration
+	}
+
+	return duration
 }

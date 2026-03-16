@@ -5,9 +5,14 @@ BASE_URL="${BASE_URL:-http://localhost:8080}"
 COMPOSE_CMD="${COMPOSE_CMD:-docker compose}"
 MONGO_URI="${MONGO_URI:-mongodb://admin:admin@localhost:27017/auctions?authSource=admin}"
 SLEEP_AFTER_BIDS="${SLEEP_AFTER_BIDS:-2}"
+SLEEP_AUTO_CLOSE="${SLEEP_AUTO_CLOSE:-2}"
+EXPECTED_ACTIVE_STATUS="${EXPECTED_ACTIVE_STATUS:-0}"
+EXPECTED_COMPLETED_STATUS="${EXPECTED_COMPLETED_STATUS:-1}"
+RUN_BID_FLOW="${RUN_BID_FLOW:-0}"
 
 HTTP_BODY=""
 HTTP_CODE=""
+MAX_API_WAIT_SECONDS="${MAX_API_WAIT_SECONDS:-30}"
 
 log() {
   printf '\n[%s] %s\n' "$(date +"%H:%M:%S")" "$1"
@@ -51,14 +56,29 @@ assert_status() {
   fi
 }
 
+wait_for_api() {
+  local deadline=$((SECONDS + MAX_API_WAIT_SECONDS))
+
+  while (( SECONDS < deadline )); do
+    if perform_request GET "$BASE_URL/auction?status=0"; then
+      if [[ "$HTTP_CODE" == "200" ]]; then
+        return 0
+      fi
+    fi
+
+    sleep 1
+  done
+
+  return 1
+}
+
 require_cmd curl
 require_cmd jq
 require_cmd uuidgen
 require_cmd docker
 
 log "Validando disponibilidade da API em $BASE_URL"
-perform_request GET "$BASE_URL/auction?status=0"
-if [[ "$HTTP_CODE" != "200" ]]; then
+if ! wait_for_api; then
   fail "API indisponivel em $BASE_URL. Suba com: make up"
 fi
 
@@ -101,6 +121,43 @@ log "Leilao criado com ID: $AUCTION_ID"
 log "Consultando leilao por ID"
 perform_request GET "$BASE_URL/auction/$AUCTION_ID"
 assert_status 200 "GET /auction/:auctionId"
+AUCTION_STATUS_AFTER_CREATE="$(echo "$HTTP_BODY" | jq -r '.status // empty')"
+if [[ "$AUCTION_STATUS_AFTER_CREATE" != "$EXPECTED_ACTIVE_STATUS" ]]; then
+  fail "Status inicial do leilao invalido. Esperado=$EXPECTED_ACTIVE_STATUS recebido=$AUCTION_STATUS_AFTER_CREATE"
+fi
+
+log "Aguardando fechamento automatico do leilao (SLEEP_AUTO_CLOSE=${SLEEP_AUTO_CLOSE}s)"
+sleep "$SLEEP_AUTO_CLOSE"
+
+log "Validando status final do leilao (deve estar Completed)"
+perform_request GET "$BASE_URL/auction/$AUCTION_ID"
+assert_status 200 "GET /auction/:auctionId apos fechamento automatico"
+AUCTION_STATUS_AFTER_CLOSE="$(echo "$HTTP_BODY" | jq -r '.status // empty')"
+if [[ "$AUCTION_STATUS_AFTER_CLOSE" != "$EXPECTED_COMPLETED_STATUS" ]]; then
+  fail "Leilao nao foi fechado automaticamente. Esperado=$EXPECTED_COMPLETED_STATUS recebido=$AUCTION_STATUS_AFTER_CLOSE. Verifique AUCTION_DURATION (recomendado 1s para este teste)."
+fi
+
+log "Fechamento automatico validado com sucesso"
+
+if [[ "$RUN_BID_FLOW" != "1" ]]; then
+  log "Script finalizado com sucesso"
+  exit 0
+fi
+
+log "RUN_BID_FLOW=1 habilitado, iniciando fluxo complementar de lances"
+
+RUN_ID_BIDS="$(date +%s)"
+PRODUCT_NAME_BIDS="Produto Script Bids $RUN_ID_BIDS"
+AUCTION_PAYLOAD_BIDS="$(jq -n --arg product "$PRODUCT_NAME_BIDS" '{product_name: $product, category: "eletronicos", description: "Produto criado automaticamente para teste de varios lances.", condition: 1}')"
+perform_request POST "$BASE_URL/auction" "$AUCTION_PAYLOAD_BIDS"
+assert_status 201 "POST /auction (fluxo de lances)"
+
+perform_request GET "$BASE_URL/auction?status=0"
+assert_status 200 "GET /auction?status=0 (fluxo de lances)"
+AUCTION_ID="$(echo "$HTTP_BODY" | jq -r --arg product "$PRODUCT_NAME_BIDS" 'map(select(.product_name == $product)) | last | .id // empty')"
+if [[ -z "$AUCTION_ID" ]]; then
+  fail "Nao foi possivel localizar o leilao de lances na listagem"
+fi
 
 declare -a BID_USERS=("$USER_1" "$USER_2" "$USER_3" "$USER_1")
 declare -a BID_AMOUNTS=("100.00" "350.00" "250.00" "500.00")

@@ -233,5 +233,66 @@ Tipos comuns em `err`:
 ## Para testar via sh
 
 ```
-./scripts/test_endpoints.sh
+make e2e
+
+[18:49:18] Resumo final (resultado esperado)
+Leilao........: 60862d7f-f50f-4462-a046-1c8d2e7ae3ad
+Produto.......: Produto Script 1773697752
+Vencedor......: 3ce78637-73a4-440d-809e-b165d5aecae8
+Valor vencedor: 500
+Usuarios teste: 3ce78637-73a4-440d-809e-b165d5aecae8, 562558ab-fe53-4474-810a-ddf0b739e203, e7853526-0cce-4607-9ef1-9c73fe5af381
+
+```
+
+## Mermaid
+
+```mermaid
+flowchart LR
+  Client[Client / Test Script]
+
+  subgraph HTTP
+    Client -->|POST /auction| AuctionController[AuctionController]
+    Client -->|"GET /auction*"| AuctionsController[AuctionsController]
+    Client -->|POST /bid| BidController[BidController]
+    Client -->|"GET /auction/winner/:id"| WinnerEndpoint[Winner Endpoint]
+  end
+
+  AuctionController -->|calls| AuctionUseCase[AuctionUseCase]
+  AuctionsController -->|calls| AuctionUseCase
+  BidController -->|calls| BidUseCase[BidUseCase]
+  WinnerEndpoint -->|calls| AuctionUseCase
+
+  AuctionUseCase -->|create & validate| AuctionEntity[Auction Entity]
+  AuctionUseCase -->|persist with duration| AuctionRepo[AuctionRepository]
+  AuctionRepo -->|insert doc| MongoAuctions[(MongoDB: auctions)]
+
+  %% Correção aqui: Aspas para permitir parênteses e caracteres especiais
+  AuctionRepo -->|spawn goroutine| AutoCloseGoroutine["goroutine: sleep(AUCTION_DURATION) -> UpdateAuctionStatus(Completed)"]
+  AutoCloseGoroutine --> AuctionRepo
+
+  BidUseCase -->|validate| BidEntity[Bid Entity]
+  BidUseCase -->|enqueue| BidRepo["BidRepository (batching)"]
+  BidRepo -->|flush batch| MongoBids[(MongoDB: bids)]
+  BidRepo -->|check| AuctionRepo
+  AuctionRepo -->|read status| BidRepo
+
+  AuctionUseCase -->|query winner| BidRepo
+  BidRepo -->|return winning bid| AuctionUseCase
+
+  subgraph ENV[Environment]
+    AUCTION_DURATION[AUCTION_DURATION]
+    AUCTION_INTERVAL[AUCTION_INTERVAL]
+    BATCH_INSERT_INTERVAL["BATCH_INSERT_INTERVAL / MAX_BATCH_SIZE"]
+  end
+
+  ENV --> AuctionUseCase
+  ENV --> BidRepo
+  ENV --> BidUseCase
+
+  %% race condition arrow
+  MongoBids -.->|race: bid arrives vs auto-close| AutoCloseGoroutine
+
+  classDef repo fill:#f9f,stroke:#333,stroke-width:1px
+  class AuctionRepo,BidRepo repo
+
 ```
