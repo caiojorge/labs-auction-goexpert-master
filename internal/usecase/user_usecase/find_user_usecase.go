@@ -21,10 +21,33 @@ type UserOutputDTO struct {
 	Name string `json:"name"`
 }
 
+type UserInputDTO struct {
+	Name string `json:"name" binding:"required,min=2"`
+}
+
 type UserUseCaseInterface interface {
+	CreateUser(
+		ctx context.Context,
+		userInputDTO UserInputDTO) *internal_error.InternalError
+
 	FindUserById(
 		ctx context.Context,
 		id string) (*UserOutputDTO, *internal_error.InternalError)
+}
+
+func (u *UserUseCase) CreateUser(
+	ctx context.Context,
+	userInputDTO UserInputDTO) *internal_error.InternalError {
+	userEntity, err := user_entity.CreateUser(userInputDTO.Name)
+	if err != nil {
+		return err
+	}
+
+	if err := u.UserRepository.CreateUser(ctx, userEntity); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (u *UserUseCase) FindUserById(
